@@ -43,13 +43,13 @@ func main() {
 		panic(err)
 	}
 
-	f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
+	// Check or create logs folder to write progress and resume data.
+	err = cert.CheckLogsFolder()
 	if err != nil {
 		panic(err)
 	}
 
-	// Check or create logs folder to write progress and resume data.
-	err = cert.CheckLogsFolder()
+	f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
 	if err != nil {
 		panic(err)
 	}
