@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/google/certificate-transparency-go/x509"
 	"github.com/google/trillian/client/backoff"
 
+	"github.com/kenjoe41/Roots/cert"
 	"github.com/kenjoe41/Roots/loglist"
 )
 
@@ -36,13 +38,51 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %q\n", err)
 	}
 
-	domainsChan := make(chan string, (BATCH_SIZE * 2))
-	f, err := os.OpenFile("domains.txt", os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
+	logDirPath, err := cert.GetLogsDir()
+	if err != nil {
+		panic(err)
+	}
+
+	f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
+	if err != nil {
+		panic(err)
+	}
+
+	// Check or create logs folder to write progress and resume data.
+	err = cert.CheckLogsFolder()
 	if err != nil {
 		panic(err)
 	}
 
 	var domains_count uint64 = 0
+	domainsChan := make(chan string, (BATCH_SIZE * 2))
+	logStateChan := make(chan cert.LogState)
+
+	// // Log latest index gotten on particular server
+	// // TODO: This is not working yet.
+	// var logStateWG sync.WaitGroup
+	// logStateWG.Add(1)
+	// go func() {
+	// 	defer close(logStateChan)
+	// 	defer logStateWG.Done()
+
+	// 	for logState := range logStateChan {
+	// 		fmt.Printf("We are logging state: %s - %d\n", logState.LogServer, logState.LogEndIndex)
+	// 		oldLogState, err := cert.ReadLogState(logState)
+	// 		if err != nil {
+	// 			// We might not have any log saved yet, save this one and continue
+	// 			cert.WriteLogState(logState)
+	// 			continue
+	// 		}
+	// 		if oldLogState.LogEndIndex == logState.LogEndIndex {
+	// 			continue
+	// 		}
+	// 		logState.LogEndIndex = uint64(loglist.Max(int64(oldLogState.LogEndIndex), int64(logState.LogEndIndex)))
+
+	// 		cert.WriteLogState(logState)
+	// 	}
+
+	// }()
 
 	var outputWG sync.WaitGroup
 	outputWG.Add(1)
@@ -68,7 +108,7 @@ func main() {
 
 				for _, serverLog := range operator.Logs {
 
-					err := processLog(serverLog.URL, domainsChan)
+					err := processLog(serverLog.URL, domainsChan, logStateChan)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Something went terribly wrong this time: %s", err)
 					}
@@ -80,12 +120,13 @@ func main() {
 
 	logprocessWG.Wait()
 	outputWG.Wait()
+	// logStateWG.Wait()
 
 	fmt.Fprint(os.Stdout, "Done walking the CT Logs Tree...")
 	fmt.Fprintf(os.Stderr, " Found %d domains.", domains_count)
 }
 
-func processLog(logserverURL string, domainsChan chan string) error {
+func processLog(logserverURL string, domainsChan chan string, logStateChan chan cert.LogState) error {
 
 	ctClient, err := client.New(logserverURL, nil, jsonclient.Options{})
 	if err != nil {
@@ -103,7 +144,7 @@ func processLog(logserverURL string, domainsChan chan string) error {
 		go func(idx int) {
 			defer wg.Done()
 			// glog.V(1).Infof("%s: Fetcher worker %d starting...", f.uri, idx)
-			runWorker(ctx, logserverURL, ranges, domainsChan, ctClient)
+			runWorker(ctx, logserverURL, ranges, domainsChan, ctClient, logStateChan)
 			// glog.V(1).Infof("%s: Fetcher worker %d finished", f.uri, idx)
 		}(w)
 	}
@@ -113,7 +154,7 @@ func processLog(logserverURL string, domainsChan chan string) error {
 	return nil
 }
 
-func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan string, ctClient *client.LogClient) {
+func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan string, ctClient *client.LogClient, logStateChan chan cert.LogState) {
 
 	if ctx.Err() != nil { // Prevent spinning when context is canceled.
 		return
@@ -174,6 +215,8 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 				}
 			}
 			r.Start += int64(len(resp.Entries))
+
+			logStateChan <- cert.LogState{LogServer: logserverURL, LogEndIndex: uint64(r.Start)}
 		}
 
 	}
@@ -182,7 +225,6 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 	return
 }
 
-// TODO: Implement this later.
 func genRanges(ctx context.Context, ctClient *client.LogClient) <-chan loglist.FetchRange {
 	batch := int64(BATCH_SIZE)
 	ranges := make(chan loglist.FetchRange)

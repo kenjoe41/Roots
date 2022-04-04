@@ -8,3 +8,8 @@ type LogEntry struct {
 type CertEntries struct {
 	LogEntry []LogEntry `json:"entries"`
 }
+
+type LogState struct {
+	LogServer   string
+	LogEndIndex uint64
+}
