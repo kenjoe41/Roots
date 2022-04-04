@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/x509"
+	"github.com/google/trillian/client/backoff"
+
 	"github.com/kenjoe41/Roots/loglist"
 )
 
 const (
 	LOGLISTURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
 
-	BATCH_SIZE  = 1000
+	BATCH_SIZE  = 10000
 	START_INDEX = int64(0)
 	NUM_WORKERS = 10
 )
@@ -55,7 +58,7 @@ func main() {
 	}()
 
 	var logprocessWG sync.WaitGroup
-	fmt.Printf("Found %d Operators.", len(serverLogList.Operators))
+	// fmt.Printf("Found %d Operators.", len(serverLogList.Operators))
 	for i := 0; i < len(serverLogList.Operators); i++ {
 
 		logprocessWG.Add(1)
@@ -125,9 +128,23 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 
 			fmt.Fprintf(os.Stderr, "[%s] Fetching entry %d - %d...\n", logserverURL, r.Start, r.End)
 
-			resp, err := ctClient.GetRawEntries(ctx, int64(r.End), int64(r.End))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "%q", err)
+			bo := &backoff.Backoff{
+				Min:    1 * time.Second,
+				Max:    30 * time.Second,
+				Factor: 2,
+				Jitter: true,
+			}
+
+			var resp *ct.GetEntriesResponse
+
+			if err := bo.Retry(ctx, func() error {
+				var err error
+				resp, err = ctClient.GetRawEntries(ctx, r.Start, r.End)
+				return err
+			}); err != nil {
+				// glog.Errorf("%s: GetRawEntries() failed: %v", f.uri, err)
+				// There is no error reporting yet for this worker, so just retry again.
+				continue
 			}
 
 			for i, entry := range resp.Entries {
