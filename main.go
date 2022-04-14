@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
 	"sync"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 const (
 	LOGLISTURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
 
-	BATCH_SIZE  = 10000
+	BATCH_SIZE  = 1000
 	START_INDEX = int64(0)
 	NUM_WORKERS = 10
 )
@@ -38,10 +37,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %q\n", err)
 	}
 
-	logDirPath, err := cert.GetLogsDir()
-	if err != nil {
-		panic(err)
-	}
+	// logDirPath, err := cert.GetLogsDir()
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Check or create logs folder to write progress and resume data.
 	err = cert.CheckLogsFolder()
@@ -49,17 +48,17 @@ func main() {
 		panic(err)
 	}
 
-	f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
-	if err != nil {
-		panic(err)
-	}
+	// f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	var domains_count uint64 = 0
 	domainsChan := make(chan string, (BATCH_SIZE * 2))
 	logStateChan := make(chan cert.LogState)
 
 	// // Log latest index gotten on particular server
-	// // TODO: This is not working yet.
+	// // TODO: This is not working yet. Also add resume on next run if it works.
 	// var logStateWG sync.WaitGroup
 	// logStateWG.Add(1)
 	// go func() {
@@ -81,21 +80,19 @@ func main() {
 
 	// 		cert.WriteLogState(logState)
 	// 	}
+	//
 
+	// Check or create logs folder to write progress and resume data.
+	// 	err = cert.CheckLogsFolder()
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	for domain := range domainsChan {
+	// 		f.WriteString(domain + "\n")
+	// 		domains_count++
+	// 	}
 	// }()
-
-	var outputWG sync.WaitGroup
-	outputWG.Add(1)
-	go func() {
-		defer close(domainsChan)
-		defer outputWG.Done()
-		defer f.Close()
-
-		for domain := range domainsChan {
-			f.WriteString(domain + "\n")
-			domains_count++
-		}
-	}()
 
 	var logprocessWG sync.WaitGroup
 	// fmt.Printf("Found %d Operators.", len(serverLogList.Operators))
@@ -119,7 +116,7 @@ func main() {
 	}
 
 	logprocessWG.Wait()
-	outputWG.Wait()
+	// outputWG.Wait()
 	// logStateWG.Wait()
 
 	fmt.Fprint(os.Stdout, "Done walking the CT Logs Tree...")
