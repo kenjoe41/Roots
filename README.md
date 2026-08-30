@@ -65,6 +65,17 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
   ./Roots > domains.txt
   ```
 
+- `-jsonl <path>` optionally appends one JSON record per certificate — `{"log", "index",
+  "hostnames", "organization"}` — to the given file, for downstream correlation that a flat
+  hostname stream can't support on its own. In particular: two hostnames that individually look
+  unrelated but appear as SAN entries on the *same* certificate is a strong same-owner signal
+  (companies commonly bundle several of their own brand domains into one multi-SAN cert).
+  Default stdout behavior is unaffected either way.
+
+  ```shell
+  ./Roots -jsonl certs.jsonl > domains.txt
+  ```
+
 ## Package layout
 
 Roots is a CLI, not a library — everything under `internal/` is an implementation package the

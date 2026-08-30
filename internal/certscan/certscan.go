@@ -73,3 +73,26 @@ func Hostnames(c *x509.Certificate) []string {
 
 	return hosts
 }
+
+// Record is a structured, per-certificate summary suitable for downstream
+// correlation - e.g. noticing that two hostnames neither of which is
+// individually known to be related were both SAN entries on the same
+// certificate, a strong same-owner signal that a flat stream of hostnames
+// (see Hostnames) can't reconstruct on its own.
+type Record struct {
+	Log          string   `json:"log"`
+	Index        int64    `json:"index"`
+	Hostnames    []string `json:"hostnames"`
+	Organization []string `json:"organization,omitempty"`
+}
+
+// NewRecord builds a Record for a certificate parsed from log logURL at the
+// given entry index.
+func NewRecord(logURL string, index int64, c *x509.Certificate) Record {
+	return Record{
+		Log:          logURL,
+		Index:        index,
+		Hostnames:    Hostnames(c),
+		Organization: c.Subject.Organization,
+	}
+}

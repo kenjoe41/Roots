@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -98,6 +101,36 @@ func logRetry(level, msg string, kv []interface{}) {
 }
 
 func main() {
+	jsonlPath := flag.String("jsonl", "", "optional path to append one JSON record per certificate "+
+		"(log, index, hostnames, organization) to, for downstream correlation (e.g. SAN co-occurrence "+
+		"analysis). Off by default; stdout's plain hostname-per-line output is unaffected either way.")
+	flag.Parse()
+
+	var jsonlChan chan certscan.Record
+	var jsonlWG sync.WaitGroup
+	if *jsonlPath != "" {
+		f, err := os.OpenFile(*jsonlPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening -jsonl file: %s\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+
+		jsonlChan = make(chan certscan.Record, batchSize)
+		jsonlWG.Add(1)
+		go func() {
+			defer jsonlWG.Done()
+			w := bufio.NewWriter(f)
+			defer w.Flush()
+			enc := json.NewEncoder(w)
+			for rec := range jsonlChan {
+				if err := enc.Encode(rec); err != nil {
+					fmt.Fprintf(os.Stderr, "Error writing -jsonl record: %s\n", err)
+				}
+			}
+		}()
+	}
+
 	fmt.Fprintln(os.Stderr, "Getting CT Logs list...")
 
 	httpClient := newHTTPClient()
@@ -152,7 +185,7 @@ func main() {
 		logsWG.Add(1)
 		go func(logserverURL string) {
 			defer logsWG.Done()
-			if err := processLog(logserverURL, domainsChan, httpClient); err != nil {
+			if err := processLog(logserverURL, domainsChan, jsonlChan, httpClient); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] processing failed: %s\n", logserverURL, err)
 			}
 		}(logURL)
@@ -161,11 +194,15 @@ func main() {
 	logsWG.Wait()
 	close(domainsChan)
 	outputWG.Wait()
+	if jsonlChan != nil {
+		close(jsonlChan)
+		jsonlWG.Wait()
+	}
 
 	fmt.Fprintf(os.Stderr, "Done walking the CT Logs Tree. Found %d domains.\n", domainsCount)
 }
 
-func processLog(logserverURL string, domainsChan chan<- string, httpClient *http.Client) error {
+func processLog(logserverURL string, domainsChan chan<- string, jsonlChan chan<- certscan.Record, httpClient *http.Client) error {
 	ctClient, err := client.New(logserverURL, httpClient, jsonclient.Options{})
 	if err != nil {
 		return fmt.Errorf("unable to construct CT log client: %w", err)
@@ -182,7 +219,7 @@ func processLog(logserverURL string, domainsChan chan<- string, httpClient *http
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runWorker(ctx, logserverURL, ranges, domainsChan, ctClient)
+			runWorker(ctx, logserverURL, ranges, domainsChan, jsonlChan, ctClient)
 		}()
 	}
 	wg.Wait()
@@ -190,7 +227,7 @@ func processLog(logserverURL string, domainsChan chan<- string, httpClient *http
 	return nil
 }
 
-func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan<- string, ctClient *client.LogClient) {
+func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan<- string, jsonlChan chan<- certscan.Record, ctClient *client.LogClient) {
 	if ctx.Err() != nil { // Prevent spinning when context is canceled.
 		return
 	}
@@ -236,6 +273,9 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 				}
 				for _, host := range certscan.Hostnames(leafCert) {
 					domainsChan <- host
+				}
+				if jsonlChan != nil {
+					jsonlChan <- certscan.NewRecord(logserverURL, index, leafCert)
 				}
 			}
 			r.Start += int64(len(resp.Entries))
