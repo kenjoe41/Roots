@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +19,17 @@ import (
 	"github.com/kenjoe41/Roots/internal/cert"
 	"github.com/kenjoe41/Roots/internal/certscan"
 	"github.com/kenjoe41/Roots/internal/loglist"
+	"github.com/kenjoe41/Roots/internal/shardprobe"
 )
 
 const (
-	logListURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
+	// all_logs_list.json (not log_list.json) is deliberate: log_list.json
+	// only contains logs Chrome currently trusts for new certs, but a log
+	// dropped from Chrome's trust list keeps serving its historical entries
+	// indefinitely. all_logs_list.json additionally covers retired/rejected
+	// logs - for domain discovery, historical data matters more than
+	// current browser-trust status.
+	logListURL = "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json"
 
 	batchSize  = 1000
 	startIndex = int64(0)
@@ -30,7 +38,28 @@ const (
 	httpRetryMax     = 8
 	httpRetryWaitMin = 1 * time.Second
 	httpRetryWaitMax = 60 * time.Second
+
+	probeClientTimeout = 5 * time.Second
 )
+
+// junkLogSubstrings marks known non-production or placeholder log entries
+// that appear in Google's log list but aren't worth crawling: testtube is
+// Google's public conformance-testing log (1.6B+ entries of synthetic test
+// certs, essentially zero real domains for the crawl time it costs), and
+// ct.example.com is a literal placeholder/schema-example entry.
+var junkLogSubstrings = []string{
+	"ct.googleapis.com/testtube",
+	"ct.example.com",
+}
+
+func isJunkLog(logURL string) bool {
+	for _, substr := range junkLogSubstrings {
+		if strings.Contains(logURL, substr) {
+			return true
+		}
+	}
+	return false
+}
 
 // newHTTPClient returns an *http.Client shared by every request Roots makes
 // (log list fetch, GetSTH, GetRawEntries). CT log servers rate-limit
@@ -79,6 +108,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	var logURLs []string
+	for _, operator := range serverLogList.Operators {
+		for _, serverLog := range operator.Logs {
+			if !isJunkLog(serverLog.URL) {
+				logURLs = append(logURLs, serverLog.URL)
+			}
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "Probing for historical log shards not in the published list...")
+	probeClient := &http.Client{Timeout: probeClientTimeout}
+	extraShards := shardprobe.Discover(context.Background(), probeClient, logURLs)
+	if len(extraShards) > 0 {
+		fmt.Fprintf(os.Stderr, "Found %d additional live historical shard(s):\n", len(extraShards))
+		for _, url := range extraShards {
+			fmt.Fprintf(os.Stderr, "  %s\n", url)
+		}
+		logURLs = append(logURLs, extraShards...)
+	}
+
 	// Check or create logs folder used to persist per-server resume state.
 	if err := cert.CheckLogsFolder(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error preparing logs folder: %s\n", err)
@@ -99,16 +148,14 @@ func main() {
 	}()
 
 	var logsWG sync.WaitGroup
-	for _, operator := range serverLogList.Operators {
-		for _, serverLog := range operator.Logs {
-			logsWG.Add(1)
-			go func(logserverURL string) {
-				defer logsWG.Done()
-				if err := processLog(logserverURL, domainsChan, httpClient); err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] processing failed: %s\n", logserverURL, err)
-				}
-			}(serverLog.URL)
-		}
+	for _, logURL := range logURLs {
+		logsWG.Add(1)
+		go func(logserverURL string) {
+			defer logsWG.Done()
+			if err := processLog(logserverURL, domainsChan, httpClient); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] processing failed: %s\n", logserverURL, err)
+			}
+		}(logURL)
 	}
 
 	logsWG.Wait()

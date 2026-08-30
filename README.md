@@ -13,16 +13,42 @@ cert), so skipping them — which an earlier version of this tool did by acciden
 drops a large fraction of the domains a log actually contains.
 
 It's a firehose over CT logs, not a targeted lookup: point it at nothing and it fetches from
-every log server currently listed in Google's
-[log list](https://www.gstatic.com/ct/log_list/v3/log_list.json), concurrently, forever (or
+every log server in Google's broader
+[all_logs_list.json](https://www.gstatic.com/ct/log_list/v3/all_logs_list.json) feed —
+deliberately not the narrower `log_list.json`, which only lists logs Chrome currently trusts
+for *new* certs. A log dropped from that trust list keeps serving the certificates it already
+has indefinitely, and for domain discovery that historical data matters more than current
+browser-trust status. On top of that, Roots probes for even older shards of every dated log
+family (`argonNNNNhN`, `nimbusNNNN`, etc.) that have aged out of *both* Google feeds but are
+still live — see [How it works](#how-it-works). Together these run concurrently, forever (or
 until each log's tree is fully walked).
+
+Monitoring a single log is not sufficient on its own: browser CT policy requires each
+certificate to carry SCTs from at least two independent log operators, and different CAs
+submit to different subsets of the ecosystem's logs. No single log operator sees more than a
+fraction of issued certificates — walking every operator's logs is the only way to approach
+full coverage.
 
 Pair it with `grep` to watch for domains matching a pattern, or feed it into other recon
 tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
 
 ## How it works
 
-- Fetches the current CT log list, then spawns one goroutine per log server.
+- Fetches `all_logs_list.json`, drops known non-production entries (Google's `testtube`
+  conformance-testing log — 1.6B+ entries of synthetic test certs — and the literal
+  `ct.example.com` placeholder entries), then probes for historical shards of every dated log
+  family that aren't in the feed at all. Sharded logs (Google `argon`/`xenon`, Sectigo
+  `mammoth`/`sabre`/`elephant`/`tiger`, DigiCert `wyvern`/`sphinx`, Let's Encrypt `oak`,
+  Cloudflare `nimbus`, ...) roll over every half year or year, and Google's published feeds
+  only retain roughly the last couple of years of shard names even though the servers keep
+  serving indefinitely — `xenon2025h2` and `argon2025h2`, for example, are each billions of
+  entries and live, but appear in neither feed. The prober walks backward from each family's
+  oldest known shard and stops after a few consecutive misses, so it finds these without
+  needing them listed anywhere. It can only rediscover shards within a family's current naming
+  scheme, not a family's pre-rename predecessor (e.g. Google's older `daedalus`/`submariner`
+  logs use unrelated names) — those are only reachable because `all_logs_list.json` records
+  them explicitly.
+- Spawns one goroutine per log server (published + discovered).
 - Each log server is walked in `1000`-entry batches by `10` concurrent workers, with
   exponential backoff on transient fetch errors.
 - All HTTP requests (log list, `GetSTH`, `GetRawEntries`) go through a shared
@@ -41,14 +67,15 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
 
 ## Package layout
 
-Roots is a CLI, not a library — `internal/cert`, `internal/certscan`, and `internal/loglist`
-are implementation packages the Go toolchain refuses to let other modules import.
+Roots is a CLI, not a library — everything under `internal/` is an implementation package the
+Go toolchain refuses to let other modules import.
 
-| Package             | Responsibility                                                     |
-|---------------------|---------------------------------------------------------------------|
-| `internal/loglist`  | Fetching/parsing the CT log list; hostname syntax validation.       |
-| `internal/certscan` | Parsing CT log entries (both entry types) into certificates, and extracting every hostname-bearing field from one. |
-| `internal/cert`     | Per-log-server resume-state persistence under `~/certwatch/logs/`.  |
+| Package               | Responsibility                                                     |
+|-----------------------|---------------------------------------------------------------------|
+| `internal/loglist`    | Fetching/parsing the CT log list; hostname syntax validation.       |
+| `internal/shardprobe` | Discovering live historical shards not present in the published log list. |
+| `internal/certscan`   | Parsing CT log entries (both entry types) into certificates, and extracting every hostname-bearing field from one. |
+| `internal/cert`       | Per-log-server resume-state persistence under `~/certwatch/logs/`.  |
 
 ## Resume support
 
