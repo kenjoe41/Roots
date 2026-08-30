@@ -6,45 +6,50 @@ import (
 	"path/filepath"
 )
 
+// GetLogsDir returns the directory used to persist per-log-server resume
+// state, creating it if necessary.
 func GetLogsDir() (string, error) {
 	usr, err := user.Current()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(usr.HomeDir, "certwatch/logs/"), nil
-
+	return filepath.Join(usr.HomeDir, "certwatch", "logs"), nil
 }
 
+// CheckLogsFolder ensures the logs directory returned by GetLogsDir exists.
 func CheckLogsFolder() error {
-
-	path, err := GetLogsDir()
+	dir, err := GetLogsDir()
 	if err != nil {
 		return err
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err := os.MkdirAll(path, 0700)
-		return err
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return os.MkdirAll(dir, 0700)
 	}
 	return nil
 }
 
-func WriteLogState(logstate LogState) {
-	cleanLogFileName := logserverFilename(logstate)
-	err := writeJSONFile(cleanLogFileName, logstate, 0777)
+// WriteLogState persists the last processed index for a log server so a
+// later run can resume from it.
+func WriteLogState(logstate LogState) error {
+	filename, err := logserverFilename(logstate)
 	if err != nil {
-		return
+		return err
 	}
+	return writeJSONFile(filename, logstate, 0600)
 }
 
+// ReadLogState reads back the last persisted state for a log server. If no
+// state has been saved yet, it returns the zero-valued input state.
 func ReadLogState(logstate LogState) (LogState, error) {
-	cleanLogFileName := logserverFilename(logstate)
-	lgstate, err := readJSONFile(cleanLogFileName, logstate)
+	filename, err := logserverFilename(logstate)
 	if err != nil {
-		// lets return the logstate tself to lessen the headache.
 		return logstate, err
 	}
-	// Type Assertion, interface to struct. https://go.dev/ref/spec#Type_assertions
-	return lgstate.(LogState), nil
 
+	var saved LogState
+	if err := readJSONFile(filename, &saved); err != nil {
+		return logstate, err
+	}
+	return saved, nil
 }

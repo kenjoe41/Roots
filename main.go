@@ -18,147 +18,92 @@ import (
 )
 
 const (
-	LOGLISTURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
+	logListURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
 
-	BATCH_SIZE  = 1000
-	START_INDEX = int64(0)
-	NUM_WORKERS = 10
+	batchSize  = 1000
+	startIndex = int64(0)
+	numWorkers = 10
 )
 
-var END_INDEX int64 = 0
-
 func main() {
-
 	fmt.Fprintln(os.Stderr, "Getting CT Logs list...")
 
-	serverLogList, err := getLogslist(LOGLISTURL)
+	serverLogList, err := loglist.Fetch(logListURL)
 	if err != nil {
-
-		fmt.Fprintf(os.Stderr, "Error: %q\n", err)
+		fmt.Fprintf(os.Stderr, "Error fetching CT log list: %s\n", err)
+		os.Exit(1)
 	}
 
-	// logDirPath, err := cert.GetLogsDir()
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// Check or create logs folder to write progress and resume data.
-	err = cert.CheckLogsFolder()
-	if err != nil {
-		panic(err)
+	// Check or create logs folder used to persist per-server resume state.
+	if err := cert.CheckLogsFolder(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error preparing logs folder: %s\n", err)
+		os.Exit(1)
 	}
 
-	// f, err := os.OpenFile(path.Join(logDirPath, "../domains.txt"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
-	// if err != nil {
-	// 	panic(err)
-	// }
+	domainsChan := make(chan string, batchSize*2)
 
-	var domains_count uint64 = 0
-	domainsChan := make(chan string, (BATCH_SIZE * 2))
-	logStateChan := make(chan cert.LogState)
+	var domainsCount uint64
+	var outputWG sync.WaitGroup
+	outputWG.Add(1)
+	go func() {
+		defer outputWG.Done()
+		for domain := range domainsChan {
+			fmt.Println(domain)
+			domainsCount++
+		}
+	}()
 
-	// // Log latest index gotten on particular server
-	// // TODO: This is not working yet. Also add resume on next run if it works.
-	// var logStateWG sync.WaitGroup
-	// logStateWG.Add(1)
-	// go func() {
-	// 	defer close(logStateChan)
-	// 	defer logStateWG.Done()
-
-	// 	for logState := range logStateChan {
-	// 		fmt.Printf("We are logging state: %s - %d\n", logState.LogServer, logState.LogEndIndex)
-	// 		oldLogState, err := cert.ReadLogState(logState)
-	// 		if err != nil {
-	// 			// We might not have any log saved yet, save this one and continue
-	// 			cert.WriteLogState(logState)
-	// 			continue
-	// 		}
-	// 		if oldLogState.LogEndIndex == logState.LogEndIndex {
-	// 			continue
-	// 		}
-	// 		logState.LogEndIndex = uint64(loglist.Max(int64(oldLogState.LogEndIndex), int64(logState.LogEndIndex)))
-
-	// 		cert.WriteLogState(logState)
-	// 	}
-	//
-
-	// Check or create logs folder to write progress and resume data.
-	// 	err = cert.CheckLogsFolder()
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-
-	// 	for domain := range domainsChan {
-	// 		f.WriteString(domain + "\n")
-	// 		domains_count++
-	// 	}
-	// }()
-
-	var logprocessWG sync.WaitGroup
-	// fmt.Printf("Found %d Operators.", len(serverLogList.Operators))
-	for i := 0; i < len(serverLogList.Operators); i++ {
-
-		logprocessWG.Add(1)
-		go func() {
-			defer logprocessWG.Done()
-			for _, operator := range serverLogList.Operators {
-
-				for _, serverLog := range operator.Logs {
-
-					err := processLog(serverLog.URL, domainsChan, logStateChan)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Something went terribly wrong this time: %s", err)
-					}
-
+	var logsWG sync.WaitGroup
+	for _, operator := range serverLogList.Operators {
+		for _, serverLog := range operator.Logs {
+			logsWG.Add(1)
+			go func(logserverURL string) {
+				defer logsWG.Done()
+				if err := processLog(logserverURL, domainsChan); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] processing failed: %s\n", logserverURL, err)
 				}
-			}
-		}()
+			}(serverLog.URL)
+		}
 	}
 
-	logprocessWG.Wait()
-	// outputWG.Wait()
-	// logStateWG.Wait()
+	logsWG.Wait()
+	close(domainsChan)
+	outputWG.Wait()
 
-	fmt.Fprint(os.Stdout, "Done walking the CT Logs Tree...")
-	fmt.Fprintf(os.Stderr, " Found %d domains.", domains_count)
+	fmt.Fprintf(os.Stderr, "Done walking the CT Logs Tree. Found %d domains.\n", domainsCount)
 }
 
-func processLog(logserverURL string, domainsChan chan string, logStateChan chan cert.LogState) error {
-
+func processLog(logserverURL string, domainsChan chan<- string) error {
 	ctClient, err := client.New(logserverURL, nil, jsonclient.Options{})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Unable to construct CT log client: %s\n", logserverURL, err)
+		return fmt.Errorf("unable to construct CT log client: %w", err)
 	}
 	ctx := context.Background()
 
-	// Generate Ranges to get
-	ranges := genRanges(ctx, ctClient)
+	ranges := genRanges(ctx, logserverURL, ctClient)
+	if ranges == nil {
+		return fmt.Errorf("unable to determine tree size")
+	}
 
-	// Run fetcher workers.
 	var wg sync.WaitGroup
-	for w, cnt := 0, NUM_WORKERS; w < cnt; w++ {
+	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
-			// glog.V(1).Infof("%s: Fetcher worker %d starting...", f.uri, idx)
-			runWorker(ctx, logserverURL, ranges, domainsChan, ctClient, logStateChan)
-			// glog.V(1).Infof("%s: Fetcher worker %d finished", f.uri, idx)
-		}(w)
+			runWorker(ctx, logserverURL, ranges, domainsChan, ctClient)
+		}()
 	}
 	wg.Wait()
 
-	// glog.V(1).Infof("%s: Fetcher terminated", f.uri)
 	return nil
 }
 
-func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan string, ctClient *client.LogClient, logStateChan chan cert.LogState) {
-
+func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.FetchRange, domainsChan chan<- string, ctClient *client.LogClient) {
 	if ctx.Err() != nil { // Prevent spinning when context is canceled.
 		return
 	}
 
 	for r := range ranges {
-
 		for r.Start <= r.End {
 			if ctx.Err() != nil { // Prevent spinning when context is canceled.
 				return
@@ -174,88 +119,70 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 			}
 
 			var resp *ct.GetEntriesResponse
-
 			if err := bo.Retry(ctx, func() error {
 				var err error
 				resp, err = ctClient.GetRawEntries(ctx, r.Start, r.End)
 				return err
 			}); err != nil {
-				// glog.Errorf("%s: GetRawEntries() failed: %v", f.uri, err)
-				// There is no error reporting yet for this worker, so just retry again.
+				// No error reporting for this worker yet, just retry.
 				continue
 			}
 
 			for i, entry := range resp.Entries {
-				index := int64(r.Start) + int64(i)
+				index := r.Start + int64(i)
 				rawEntry, err := ct.RawLogEntryFromLeaf(index, &entry)
 				if _, ok := err.(x509.NonFatalErrors); !ok && err != nil {
-					fmt.Printf("Erroneous certificate: log=%s index=%d err=%v",
+					fmt.Fprintf(os.Stderr, "Erroneous certificate: log=%s index=%d err=%v\n",
 						logserverURL, index, err)
 					continue
 				}
-				cert, err := rawEntry.Leaf.X509Certificate()
+				leafCert, err := rawEntry.Leaf.X509Certificate()
 				if err != nil {
-					// TODO: Add error logging later.
 					continue
 				}
-				if len(cert.Subject.CommonName) > 0 && loglist.ValidHostname(cert.Subject.CommonName) {
-					domainsChan <- cert.Subject.CommonName
+				if len(leafCert.Subject.CommonName) > 0 && loglist.ValidHostname(leafCert.Subject.CommonName) {
+					domainsChan <- leafCert.Subject.CommonName
 				}
-				if len(cert.DNSNames) > 0 {
-					// Let's not collect bullsh*t, only valid hostnames
-					for _, dnsname := range cert.DNSNames {
-						if loglist.ValidHostname(dnsname) {
-
-							domainsChan <- dnsname
-						}
+				for _, dnsname := range leafCert.DNSNames {
+					if loglist.ValidHostname(dnsname) {
+						domainsChan <- dnsname
 					}
 				}
 			}
 			r.Start += int64(len(resp.Entries))
 
-			logStateChan <- cert.LogState{LogServer: logserverURL, LogEndIndex: uint64(r.Start)}
+			if err := cert.WriteLogState(cert.LogState{LogServer: logserverURL, LogEndIndex: uint64(r.Start)}); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Failed to persist resume state: %s\n", logserverURL, err)
+			}
 		}
-
 	}
-	fmt.Fprintf(os.Stderr, "[%s] Done fetching entries ...\n", logserverURL)
-
-	return
+	fmt.Fprintf(os.Stderr, "[%s] Done fetching entries...\n", logserverURL)
 }
 
-func genRanges(ctx context.Context, ctClient *client.LogClient) <-chan loglist.FetchRange {
-	batch := int64(BATCH_SIZE)
+func genRanges(ctx context.Context, logserverURL string, ctClient *client.LogClient) <-chan loglist.FetchRange {
+	batch := int64(batchSize)
 	ranges := make(chan loglist.FetchRange)
 
-	// Get the size of entries in a log.
 	logSTH, err := ctClient.GetSTH(ctx)
 	if err != nil {
-		// log, failed to get STH of log server, retrn nil
+		fmt.Fprintf(os.Stderr, "[%s] Failed to get STH: %s\n", logserverURL, err)
 		return nil
 	}
-	tree_size := int64(logSTH.TreeSize)
-	// totalSize := tree_size - 1
+	endIndex := loglist.Max(startIndex, int64(logSTH.TreeSize))
 
-	END_INDEX := loglist.Max(END_INDEX, tree_size)
+	// Resume from the last persisted index for this log server, if any.
+	start := startIndex
+	if state, err := cert.ReadLogState(cert.LogState{LogServer: logserverURL}); err == nil && state.LogEndIndex > 0 {
+		start = loglist.Min(int64(state.LogEndIndex), endIndex)
+	}
 
 	go func() {
 		defer close(ranges)
-		start, end := START_INDEX, END_INDEX
-
-		for start < end {
-
-			// if start == end { // Implies f.opts.Continuous == true.
-			// 	if err := f.updateSTH(ctx); err != nil {
-			// 		glog.Warningf("%s: Failed to obtain bigger STH: %v", f.uri, err)
-			// 		return
-			// 	}
-			// 	end = f.opts.EndIndex
-			// }
-
-			batchEnd := int64(start) + loglist.Min(int64(end-start), batch)
-			next := loglist.FetchRange{Start: start, End: (batchEnd - 1)}
+		for start < endIndex {
+			batchEnd := start + loglist.Min(endIndex-start, batch)
+			next := loglist.FetchRange{Start: start, End: batchEnd - 1}
 			select {
 			case <-ctx.Done():
-				// glog.Warningf("%s: Cancelling genRanges: %v", f.uri, ctx.Err())
 				return
 			case ranges <- next:
 			}
@@ -264,10 +191,4 @@ func genRanges(ctx context.Context, ctClient *client.LogClient) <-chan loglist.F
 	}()
 
 	return ranges
-}
-
-func getLogslist(logsurl string) (*loglist.LogList, error) {
-	list, err := loglist.Fetch(logsurl)
-
-	return list, err
 }

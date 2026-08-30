@@ -3,7 +3,7 @@ package loglist
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -23,26 +23,28 @@ type Log struct {
 func Fetch(url string) (*LogList, error) {
 	response, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("error fetching log list from server: %s", err)
+		return nil, fmt.Errorf("error fetching log list from server: %w", err)
 	}
-	content, err := ioutil.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil {
-		return nil, fmt.Errorf("error reading log list respomse body: %s", err)
-	}
+	defer response.Body.Close()
+
 	if response.StatusCode != 200 {
-		return nil, fmt.Errorf("non-2XX response from server: %s", err)
+		return nil, fmt.Errorf("non-2XX response from server: %s", response.Status)
 	}
-	return Unmarshal(content), nil
+
+	content, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading log list response body: %w", err)
+	}
+	return Unmarshal(content)
 }
 
-func Unmarshal(jsonBytes []byte) *LogList {
+func Unmarshal(jsonBytes []byte) (*LogList, error) {
 	list := new(LogList)
 
-	if err := json.Unmarshal(jsonBytes, &list); err != nil {
-		return nil
+	if err := json.Unmarshal(jsonBytes, list); err != nil {
+		return nil, fmt.Errorf("error unmarshalling log list: %w", err)
 	}
-	return list
+	return list, nil
 }
 
 func Min(a, b int64) int64 {

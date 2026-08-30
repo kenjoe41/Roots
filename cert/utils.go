@@ -2,16 +2,24 @@ package cert
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 )
 
-func logserverFilename(logstate LogState) string {
-	cleanFilename := strings.Replace(strings.Replace(strings.Replace(logstate.LogServer, "://", "_", 1), "/", "_", -1), ".", "_", -1)
-	return path.Join(cleanFilename, ".json")
+// logserverFilename maps a log server URL to a stable, filesystem-safe path
+// under the logs directory, e.g. "https://ct.example.com/log" ->
+// "<logsDir>/https_ct_example_com_log.json".
+func logserverFilename(logstate LogState) (string, error) {
+	dir, err := GetLogsDir()
+	if err != nil {
+		return "", err
+	}
 
+	replacer := strings.NewReplacer("://", "_", "/", "_", ".", "_")
+	cleanName := replacer.Replace(logstate.LogServer)
+	return filepath.Join(dir, cleanName+".json"), nil
 }
 
 func writeJSONFile(filename string, obj interface{}, perm os.FileMode) error {
@@ -36,13 +44,13 @@ func writeJSONFile(filename string, obj interface{}, perm os.FileMode) error {
 	return nil
 }
 
-func readJSONFile(filename string, obj interface{}) (interface{}, error) {
-	bytes, err := ioutil.ReadFile(filename)
+func readJSONFile(filename string, obj interface{}) error {
+	bytes, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("reading %s: %w", filename, err)
 	}
-	if err = json.Unmarshal(bytes, obj); err != nil {
-		return nil, err
+	if err := json.Unmarshal(bytes, obj); err != nil {
+		return fmt.Errorf("unmarshalling %s: %w", filename, err)
 	}
-	return obj, nil
+	return nil
 }
