@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/google/certificate-transparency-go v1.1.2
 	github.com/google/trillian v1.4.0
+	github.com/hashicorp/go-retryablehttp v0.7.8
 )
 
 require (
@@ -39,6 +40,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/jhump/protoreflect v1.9.0 // indirect
 	github.com/jonboulle/clockwork v0.2.2 // indirect

@@ -17,6 +17,12 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
 - Fetches the current CT log list, then spawns one goroutine per log server.
 - Each log server is walked in `1000`-entry batches by `10` concurrent workers, with
   exponential backoff on transient fetch errors.
+- All HTTP requests (log list, `GetSTH`, `GetRawEntries`) go through a shared
+  [retryablehttp](https://github.com/hashicorp/go-retryablehttp) client that retries on `429`
+  and `5xx` automatically, honoring a log server's `Retry-After` header on `429` instead of
+  guessing a backoff — CT log servers rate-limit aggressively, and this is what lets a run
+  survive that instead of silently dropping a whole log server on the first `429`. Retries are
+  logged to stderr as `[http retry] ...` so you can see when a log is throttling you.
 - Every valid hostname found (validated against RFC 6125 syntax rules) is printed to stdout,
   one per line, as soon as it's parsed — no buffering or deduplication.
 - Progress and errors are written to stderr, so stdout stays a clean, pipeable domain list:

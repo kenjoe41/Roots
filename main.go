@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/x509"
 	"github.com/google/trillian/client/backoff"
+	"github.com/hashicorp/go-retryablehttp"
 
 	"github.com/kenjoe41/Roots/cert"
 	"github.com/kenjoe41/Roots/loglist"
@@ -23,12 +25,54 @@ const (
 	batchSize  = 1000
 	startIndex = int64(0)
 	numWorkers = 10
+
+	httpRetryMax     = 8
+	httpRetryWaitMin = 1 * time.Second
+	httpRetryWaitMax = 60 * time.Second
 )
+
+// newHTTPClient returns an *http.Client shared by every request Roots makes
+// (log list fetch, GetSTH, GetRawEntries). CT log servers rate-limit
+// aggressively under load; this transparently retries on 429/5xx and
+// connection errors, honoring a server's Retry-After header on 429 instead
+// of hammering it on a fixed interval.
+func newHTTPClient() *http.Client {
+	rc := retryablehttp.NewClient()
+	rc.RetryMax = httpRetryMax
+	rc.RetryWaitMin = httpRetryWaitMin
+	rc.RetryWaitMax = httpRetryWaitMax
+	rc.Logger = retryLogger{}
+	return rc.StandardClient()
+}
+
+// retryLogger adapts retryablehttp's leveled logging to this CLI's plain
+// stderr progress style, so rate-limit backoffs are visible instead of
+// silently absorbed.
+type retryLogger struct{}
+
+func (retryLogger) Error(msg string, kv ...interface{}) { logRetry("error", msg, kv) }
+func (retryLogger) Warn(msg string, kv ...interface{})  { logRetry("warn", msg, kv) }
+func (retryLogger) Info(msg string, kv ...interface{})  {}
+
+// Debug fires on both "performing request" (every attempt, including the
+// first) and "retrying request" (only when a retry was decided) - only the
+// latter is worth surfacing, or every request would log a line.
+func (retryLogger) Debug(msg string, kv ...interface{}) {
+	if msg == "retrying request" {
+		logRetry("retry", msg, kv)
+	}
+}
+
+func logRetry(level, msg string, kv []interface{}) {
+	fmt.Fprintf(os.Stderr, "[http %s] %s %v\n", level, msg, kv)
+}
 
 func main() {
 	fmt.Fprintln(os.Stderr, "Getting CT Logs list...")
 
-	serverLogList, err := loglist.Fetch(logListURL)
+	httpClient := newHTTPClient()
+
+	serverLogList, err := loglist.Fetch(logListURL, httpClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching CT log list: %s\n", err)
 		os.Exit(1)
@@ -59,7 +103,7 @@ func main() {
 			logsWG.Add(1)
 			go func(logserverURL string) {
 				defer logsWG.Done()
-				if err := processLog(logserverURL, domainsChan); err != nil {
+				if err := processLog(logserverURL, domainsChan, httpClient); err != nil {
 					fmt.Fprintf(os.Stderr, "[%s] processing failed: %s\n", logserverURL, err)
 				}
 			}(serverLog.URL)
@@ -73,8 +117,8 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Done walking the CT Logs Tree. Found %d domains.\n", domainsCount)
 }
 
-func processLog(logserverURL string, domainsChan chan<- string) error {
-	ctClient, err := client.New(logserverURL, nil, jsonclient.Options{})
+func processLog(logserverURL string, domainsChan chan<- string, httpClient *http.Client) error {
+	ctClient, err := client.New(logserverURL, httpClient, jsonclient.Options{})
 	if err != nil {
 		return fmt.Errorf("unable to construct CT log client: %w", err)
 	}
@@ -163,8 +207,13 @@ func genRanges(ctx context.Context, logserverURL string, ctClient *client.LogCli
 	batch := int64(batchSize)
 	ranges := make(chan loglist.FetchRange)
 
-	logSTH, err := ctClient.GetSTH(ctx)
-	if err != nil {
+	var logSTH *ct.SignedTreeHead
+	bo := &backoff.Backoff{Min: 1 * time.Second, Max: 30 * time.Second, Factor: 2, Jitter: true}
+	if err := bo.Retry(ctx, func() error {
+		var err error
+		logSTH, err = ctClient.GetSTH(ctx)
+		return err
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Failed to get STH: %s\n", logserverURL, err)
 		return nil
 	}

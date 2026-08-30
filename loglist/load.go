@@ -20,8 +20,8 @@ type Log struct {
 	URL string `json:"url"`
 }
 
-func Fetch(url string) (*LogList, error) {
-	response, err := http.Get(url)
+func Fetch(url string, httpClient *http.Client) (*LogList, error) {
+	response, err := httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching log list from server: %w", err)
 	}
