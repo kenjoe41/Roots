@@ -4,10 +4,18 @@
 [![GitHub license](https://img.shields.io/badge/LICENSE-MIT-GREEN?style=for-the-badge)](LICENSE)
 
 Roots walks public [Certificate Transparency](https://certificate.transparency.dev/) logs and
-streams every hostname it finds (certificate `CommonName` and `DNSNames`) to stdout. It's a
-firehose over CT logs, not a targeted lookup: point it at nothing and it fetches from every log
-server currently listed in Google's [log list](https://www.gstatic.com/ct/log_list/v3/log_list.json),
-concurrently, forever (or until each log's tree is fully walked).
+streams every hostname it finds to stdout — pulled from a certificate's Subject `CommonName`,
+every SAN `dNSName` and `uniformResourceIdentifier` entry, the domain half of SAN email
+addresses, and (for constrained CA certs) the Name Constraints extension. Both final
+certificates and precertificates are parsed; precertificates make up a large share of most
+logs' entries (a CA logs one to obtain an embedded SCT, often without ever submitting a final
+cert), so skipping them — which an earlier version of this tool did by accident — silently
+drops a large fraction of the domains a log actually contains.
+
+It's a firehose over CT logs, not a targeted lookup: point it at nothing and it fetches from
+every log server currently listed in Google's
+[log list](https://www.gstatic.com/ct/log_list/v3/log_list.json), concurrently, forever (or
+until each log's tree is fully walked).
 
 Pair it with `grep` to watch for domains matching a pattern, or feed it into other recon
 tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
@@ -30,6 +38,17 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
   ```shell
   ./Roots > domains.txt
   ```
+
+## Package layout
+
+Roots is a CLI, not a library — `internal/cert`, `internal/certscan`, and `internal/loglist`
+are implementation packages the Go toolchain refuses to let other modules import.
+
+| Package             | Responsibility                                                     |
+|---------------------|---------------------------------------------------------------------|
+| `internal/loglist`  | Fetching/parsing the CT log list; hostname syntax validation.       |
+| `internal/certscan` | Parsing CT log entries (both entry types) into certificates, and extracting every hostname-bearing field from one. |
+| `internal/cert`     | Per-log-server resume-state persistence under `~/certwatch/logs/`.  |
 
 ## Resume support
 

@@ -15,8 +15,9 @@ import (
 	"github.com/google/trillian/client/backoff"
 	"github.com/hashicorp/go-retryablehttp"
 
-	"github.com/kenjoe41/Roots/cert"
-	"github.com/kenjoe41/Roots/loglist"
+	"github.com/kenjoe41/Roots/internal/cert"
+	"github.com/kenjoe41/Roots/internal/certscan"
+	"github.com/kenjoe41/Roots/internal/loglist"
 )
 
 const (
@@ -180,17 +181,14 @@ func runWorker(ctx context.Context, logserverURL string, ranges <-chan loglist.F
 						logserverURL, index, err)
 					continue
 				}
-				leafCert, err := rawEntry.Leaf.X509Certificate()
+				leafCert, err := certscan.Leaf(rawEntry)
 				if err != nil {
+					fmt.Fprintf(os.Stderr, "Unparseable certificate: log=%s index=%d err=%v\n",
+						logserverURL, index, err)
 					continue
 				}
-				if len(leafCert.Subject.CommonName) > 0 && loglist.ValidHostname(leafCert.Subject.CommonName) {
-					domainsChan <- leafCert.Subject.CommonName
-				}
-				for _, dnsname := range leafCert.DNSNames {
-					if loglist.ValidHostname(dnsname) {
-						domainsChan <- dnsname
-					}
+				for _, host := range certscan.Hostnames(leafCert) {
+					domainsChan <- host
 				}
 			}
 			r.Start += int64(len(resp.Entries))
