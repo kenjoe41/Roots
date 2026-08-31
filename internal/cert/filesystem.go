@@ -4,7 +4,19 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sync"
 )
+
+// writeMu serializes the read-compare-write sequence in WriteLogState.
+// runWorker's numWorkers goroutines checkpoint the same log's progress
+// concurrently, in whatever order their batches happen to finish (not
+// necessarily the order their ranges were assigned); without serializing
+// the check, two goroutines could both read the same prior state, both
+// decide their own index is the higher one, and the one that happens to
+// write last wins regardless of which index was actually larger -
+// silently regressing the persisted resume point and causing already
+// processed entries to be re-fetched next run.
+var writeMu sync.Mutex
 
 // GetLogsDir returns the directory used to persist per-log-server resume
 // state, creating it if necessary.
@@ -30,11 +42,21 @@ func CheckLogsFolder() error {
 }
 
 // WriteLogState persists the last processed index for a log server so a
-// later run can resume from it.
+// later run can resume from it. Never regresses an already-persisted,
+// higher index - see writeMu's comment for why that matters when multiple
+// workers checkpoint the same log concurrently.
 func WriteLogState(logstate LogState) error {
 	filename, err := logserverFilename(logstate)
 	if err != nil {
 		return err
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	var existing LogState
+	if err := readJSONFile(filename, &existing); err == nil && existing.LogEndIndex >= logstate.LogEndIndex {
+		return nil
 	}
 	return writeJSONFile(filename, logstate, 0600)
 }
