@@ -1,9 +1,9 @@
-# Roots
+# roots
 
-[![Go Reference](https://img.shields.io/badge/go-reference-blue?logo=go&logoColor=white&style=for-the-badge)](https://pkg.go.dev/github.com/kenjoe41/Roots)
+[![Go Reference](https://img.shields.io/badge/go-reference-blue?logo=go&logoColor=white&style=for-the-badge)](https://pkg.go.dev/github.com/kenjoe41/roots)
 [![GitHub license](https://img.shields.io/badge/LICENSE-MIT-GREEN?style=for-the-badge)](LICENSE)
 
-Roots walks public [Certificate Transparency](https://certificate.transparency.dev/) logs and
+roots walks public [Certificate Transparency](https://certificate.transparency.dev/) logs and
 streams every hostname it finds to stdout — pulled from a certificate's Subject `CommonName`,
 every SAN `dNSName` and `uniformResourceIdentifier` entry, the domain half of SAN email
 addresses, and (for constrained CA certs) the Name Constraints extension. Both final
@@ -18,7 +18,7 @@ every log server in Google's broader
 deliberately not the narrower `log_list.json`, which only lists logs Chrome currently trusts
 for *new* certs. A log dropped from that trust list keeps serving the certificates it already
 has indefinitely, and for domain discovery that historical data matters more than current
-browser-trust status. On top of that, Roots probes for even older shards of every dated log
+browser-trust status. On top of that, roots probes for even older shards of every dated log
 family (`argonNNNNhN`, `nimbusNNNN`, etc.) that have aged out of *both* Google feeds but are
 still live — see [How it works](#how-it-works). Together these run concurrently, forever (or
 until each log's tree is fully walked).
@@ -62,7 +62,7 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
 - Progress and errors are written to stderr, so stdout stays a clean, pipeable domain list:
 
   ```shell
-  ./Roots > domains.txt
+  ./roots > domains.txt
   ```
 
 - `-jsonl <path>` optionally appends one JSON record per certificate — `{"log", "index",
@@ -73,12 +73,12 @@ tooling such as [goSubsWordlist](https://github.com/kenjoe41/goSubsWordlist).
   Default stdout behavior is unaffected either way.
 
   ```shell
-  ./Roots -jsonl certs.jsonl > domains.txt
+  ./roots -jsonl certs.jsonl > domains.txt
   ```
 
 ## Package layout
 
-Roots is a CLI, not a library — everything under `internal/` is an implementation package the
+roots is a CLI, not a library — everything under `internal/` is an implementation package the
 Go toolchain refuses to let other modules import.
 
 | Package               | Responsibility                                                     |
@@ -90,7 +90,7 @@ Go toolchain refuses to let other modules import.
 
 ## Resume support
 
-Roots persists the last index processed for each log server under
+roots persists the last index processed for each log server under
 `~/certwatch/logs/<log-server>.json`. On the next run, each log server resumes from its saved
 index instead of starting over from zero — useful since some logs have hundreds of millions of
 entries and a full walk can take a long time.
@@ -100,26 +100,26 @@ Delete `~/certwatch/logs/` to force a full re-walk from scratch.
 ## Install
 
 ```shell
-go install -v github.com/kenjoe41/Roots@latest
+go install -v github.com/kenjoe41/roots@latest
 ```
 
 ## Usage
 
 ```shell
-Roots > domains.txt
+roots > domains.txt
 ```
 
-There are no flags. Roots always walks every log in the current CT log list; interrupt it
+There are no flags. roots always walks every log in the current CT log list; interrupt it
 with Ctrl-C at any point — progress up to the last completed batch per log is saved.
 
 ## Caveats
 
-- This is a high-volume crawl: CT logs are large, and Roots deliberately does not rate-limit
+- This is a high-volume crawl: CT logs are large, and roots deliberately does not rate-limit
   itself beyond the built-in backoff-on-error. Be considerate of the log operators you're
   hitting.
 - No deduplication is performed. The same hostname will appear multiple times if it shows up
   in multiple certificates (SAN reissues, multiple logs, etc.) — dedupe downstream if needed,
-  e.g. `./Roots | sort -u`.
+  e.g. `./roots | sort -u`.
 
 ## License
 

@@ -1,4 +1,4 @@
-module github.com/kenjoe41/Roots
+module github.com/kenjoe41/roots
 
 go 1.25.0
 

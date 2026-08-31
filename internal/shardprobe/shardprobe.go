@@ -201,7 +201,7 @@ func probeLive(ctx context.Context, client *http.Client, logURL string) bool {
 	if err != nil {
 		return false
 	}
-	req.Header.Set("User-Agent", "Roots-shardprobe")
+	req.Header.Set("User-Agent", "roots-shardprobe")
 
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()

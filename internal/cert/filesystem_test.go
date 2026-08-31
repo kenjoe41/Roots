@@ -7,7 +7,7 @@ import (
 )
 
 // TestWriteLogState_ConcurrentWritesNeverRegress is the regression test for
-// two bugs found running Roots for real: (1) WriteLogState's shared,
+// two bugs found running roots for real: (1) WriteLogState's shared,
 // non-unique temp filename raced when multiple workers checkpointed the
 // same log concurrently, failing with "rename ... no such file or
 // directory"; (2) even with unique temp files, concurrent writers racing

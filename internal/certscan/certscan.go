@@ -9,7 +9,7 @@ import (
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/x509"
 
-	"github.com/kenjoe41/Roots/internal/loglist"
+	"github.com/kenjoe41/roots/internal/loglist"
 )
 
 // Leaf parses the certificate carried by a raw CT log entry.

@@ -19,10 +19,10 @@ import (
 	"github.com/google/trillian/client/backoff"
 	"github.com/hashicorp/go-retryablehttp"
 
-	"github.com/kenjoe41/Roots/internal/cert"
-	"github.com/kenjoe41/Roots/internal/certscan"
-	"github.com/kenjoe41/Roots/internal/loglist"
-	"github.com/kenjoe41/Roots/internal/shardprobe"
+	"github.com/kenjoe41/roots/internal/cert"
+	"github.com/kenjoe41/roots/internal/certscan"
+	"github.com/kenjoe41/roots/internal/loglist"
+	"github.com/kenjoe41/roots/internal/shardprobe"
 )
 
 const (
@@ -64,7 +64,7 @@ func isJunkLog(logURL string) bool {
 	return false
 }
 
-// newHTTPClient returns an *http.Client shared by every request Roots makes
+// newHTTPClient returns an *http.Client shared by every request roots makes
 // (log list fetch, GetSTH, GetRawEntries). CT log servers rate-limit
 // aggressively under load; this transparently retries on 429/5xx and
 // connection errors, honoring a server's Retry-After header on 429 instead
